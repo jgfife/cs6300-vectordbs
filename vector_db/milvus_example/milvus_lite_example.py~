@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""
+Milvus Lite demo: persistent local DB file, upsert (insert+update), query, and filters.
+
+Run:
+  python milvus_lite_demo.py
+"""
+
+from __future__ import annotations
+import pprint
+import shutil
+from pathlib import Path
+from typing import Dict, List
+
+from pymilvus import MilvusClient
+from sentence_transformers import SentenceTransformer
+
+pp = pprint.PrettyPrinter(indent=2, width=100)
+
+# ---------- Config ----------
+DB_PATH = "./milvus_demo.db"     # Milvus Lite = in-process, single local file
+COL = "vector_db_demo"
+DIM = 384
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+
+# ---------- Demo data ----------
+docs_insert = [
+    {
+        "id": "doc-001",
+        "text": "HNSW is a popular approximate nearest neighbor (ANN) graph index used in vector databases.",
+        "topic": "indexes",
+        "source": "manual",
+        "level": "intro",
+    },
+    {
+        "id": "doc-002",
+        "text": "IVF-Flat partitions embeddings into coarse clusters, then scans a subset for exact distances.",
+        "topic": "indexes",
+        "source": "manual",
+        "level": "intro",
+    },
+    {
+        "id": "doc-003",
+        "text": "PQ (Product Quantization) compresses vectors into codebooks to trade accuracy for memory/speed.",
+        "topic": "compression",
+        "source": "manual",
+        "level": "intermediate",
+    },
+]
+
+doc_update = {
+    "id": "doc-002",
+    "text": "IVF (Inverted File) uses coarse quantization; IVF-Flat stores raw vectors in the cells it probes.",
+    "topic": "indexes",
+    "source": "revised",
+    "level": "intro",
+}
+
+# ---------- Helpers ----------
+def fresh_start(path: str):
+    p = Path(path)
+    if p.exists():
+        # Milvus Lite stores everything in this file/dir.
+        # Remove to make the demo reproducible in class.
+        if p.is_dir():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+
+def show(title: str, obj):
+    print(f"\n=== {title} ===")
+    pp.pprint(obj)
+
+def print_search_results(title: str, res):
+    """
+    MilvusClient.search returns a list (len = number of queries).
+    Each entry is a list of hits. Each hit is a dict with keys like:
+      - "id"
+      - "distance"
+      - any requested output_fields (e.g., "text", "topic", ...)
+    """
+    print(f"\n=== {title} ===")
+    for qi, hits in enumerate(res):
+        print(f"Query {qi}:")
+        for rank, hit in enumerate(hits):
+            # hit may include the scalar fields you asked for via output_fields
+            text = hit.get("text")
+            topic = hit.get("topic")
+            source = hit.get("source")
+            _id = hit.get("id")
+            dist = hit.get("distance")
+            print(f"  {rank:>2d}. id={_id}  score(sim)≈{1 - dist if dist is not None else 'NA'}  "
+                  f"topic={topic}  source={source}\n      {text}")
+
+def main():
+    # Start clean for a predictable classroom run
+    fresh_start(DB_PATH)
+
+    # In-process, zero-infra Milvus (Lite)
+    client = MilvusClient(DB_PATH)
+
+    # (Re)create a clean collection.
+    # Use string PK, and enable_dynamic_field so we can attach arbitrary metadata (topic/source/level/text).
+    if client.has_collection(COL):
+        client.drop_collection(COL)
+    client.create_collection(
+        collection_name=COL,
+        dimension=DIM,
+        primary_field="id",
+        id_type="VARCHAR",
+        max_length=64,
+        enable_dynamic_field=True,    # stores extra fields (e.g., "text", "topic") without predefining schema
+        metric_type="COSINE",
+    )
+
+    # Prepare embedder
+    embedder = SentenceTransformer(MODEL_NAME)
+
+    # ---------- UPSERT (INSERT mode) ----------
+    vecs = embedder.encode([d["text"] for d in docs_insert], normalize_embeddings=True).tolist()
+    rows = []
+    for d, v in zip(docs_insert, vecs):
+        row = {"id": d["id"], "vector": v}
+        row.update(d)  # includes text, topic, source, level
+        rows.append(row)
+
+    client.insert(collection_name=COL, data=rows)
+
+    # (Optional) a quick "count" (workaround: search with a random query and check num hits)
+    # Milvus doesn't have a single call on MilvusClient for row count; for demo we just show we can retrieve all IDs.
+    all_hits = client.search(
+        collection_name=COL,
+        data=embedder.encode(["list everything"], normalize_embeddings=True).tolist(),
+        limit=10,
+        output_fields=["id"],
+        # no filter
+    )
+    show("Count after INSERT upsert (approx by listing)", len(all_hits[0]))
+
+    # ---------- Query: basic semantic search ----------
+    res1 = client.search(
+        collection_name=COL,
+        data=embedder.encode(["Which method compresses vectors with codebooks?"], normalize_embeddings=True).tolist(),
+        limit=2,
+        output_fields=["text", "topic", "source", "level"],
+    )
+    print_search_results("Query 1 (top 2)", res1)
+
+    # ---------- Filter by metadata (server-side scalar filter) ----------
+    res2 = client.search(
+        collection_name=COL,
+        data=embedder.encode(["tell me about approximate nearest neighbor structures"], normalize_embeddings=True).tolist(),
+        filter="topic == 'indexes'",     # exact match filter on a scalar field
+        limit=5,
+        output_fields=["text", "topic", "source", "level"],
+    )
+    print_search_results("Query 2 with filter: topic == 'indexes'", res2)
+
+    # ---------- Filter by document substring (client-side) ----------
+    # Milvus doesn't do substring match on text; do a normal search, then filter in Python.
+    res3_raw = client.search(
+        collection_name=COL,
+        data=embedder.encode(["graph-based ANN"], normalize_embeddings=True).tolist(),
+        limit=5,
+        output_fields=["text", "topic", "source", "level"],
+    )
+    needle = "HNSW"
+    res3 = [[hit for hit in res if needle in (hit.get("text") or "")] for res in res3_raw]
+    print_search_results(f"Query 3 with client-side substring filter text contains '{needle}'", res3)
+
+    # ---------- UPSERT (UPDATE mode) ----------
+    upd_vec = embedder.encode([doc_update["text"]], normalize_embeddings=True).tolist()[0]
+    client.upsert(
+        collection_name=COL,
+        data=[{"id": doc_update["id"], "vector": upd_vec, **doc_update}],
+    )
+
+    # Verify the update using a metadata filter
+    res4 = client.search(
+        collection_name=COL,
+        data=embedder.encode(["explain IVF-Flat"], normalize_embeddings=True).tolist(),
+        filter="source == 'revised'",
+        limit=3,
+        output_fields=["text", "topic", "source", "level"],
+    )
+    print_search_results("Query 4 after UPDATE upsert (filter: source == 'revised')", res4)
+
+    print("\nDone. Milvus Lite DB persisted at:", Path(DB_PATH).resolve())
+
+if __name__ == "__main__":
+    main()
