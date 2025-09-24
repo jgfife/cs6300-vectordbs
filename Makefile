@@ -9,6 +9,7 @@ help:
 	@echo "install-deb                 - Install OS packages necessary to support this project. Assumes apt/dpkg package management system."
 	@echo "install-pip                 - Install Python pakcages necessary to suport this project."
 	@echo "chroma-demo    			   - Run the Chroma demo."
+	@echo "clean                       - Delete contents of db/chroma folder."
 	@echo
 
 $(VENV):
@@ -28,3 +29,6 @@ install-pip: $(VENV)
 
 chroma: $(VENV)
 	. $(VENV)/bin/activate; python3 src/chroma.py
+
+clean:
+	rm -rf db/chroma/*

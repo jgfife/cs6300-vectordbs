@@ -10,11 +10,12 @@ from __future__ import annotations
 from pathlib import Path
 import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-from db import load_data_to_chroma
+from chromadb.config import Settings
+import db
 
 def main():
     dbDir = Path("./db/chroma")
-    client = chromadb.PersistentClient(path=str(dbDir))
+    client = chromadb.PersistentClient(path=str(dbDir), settings=Settings(anonymized_telemetry=False))
 
     # Create or get a collection with an embedding function
     # Note: you can add HNSW params via metadata if desired (implementation-dependent)
@@ -24,18 +25,15 @@ def main():
         metadata={"hnsw:space": "cosine"}
     )
 
-    count =load_data_to_chroma(collection, "dataset/wiki_movie_plots_deduped.csv")
+    movies = db.load_movie_plots_csv("dataset/wiki_movie_plots_deduped.csv")
+    if collection.count() == len(movies):
+        print("Collection already contains all movie plots; skipping load.")
+        return collection.count()
+
+    count = db.load_data_to_chroma(collection, movies)
     print(f"{count} items are contained in the ChromaDB collection 'movie_plots'")
 
-    # --- Query: basic semantic search ---
-    res1 = collection.query(
-        query_texts=["What movies are based on plays?"],
-        n_results=5,
-    )
-    print("What movies are based on plays?", res1)
-
-
-    print("\nDone")
+    # TODO: Generate queries and time them
 
 if __name__ == "__main__":
     main()

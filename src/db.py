@@ -5,6 +5,7 @@ Database utilities for loading data into ChromaDB.
 
 from __future__ import annotations
 import csv
+import time
 from pathlib import Path
 from typing import Dict, List, Any
 import chromadb
@@ -51,41 +52,46 @@ def load_movie_plots_csv(csv_path: str | Path) -> List[Dict[str, Any]]:
 
 def load_data_to_chroma(
     collection: chromadb.Collection, 
-    csv_path: str | Path
+    data: List[Dict[str, Any]]
 ) -> int:
     """
-    Load movie plots from CSV into a ChromaDB collection.
+    Load structured data into a ChromaDB collection.
     
     Args:
         collection: ChromaDB collection to load data into
-        csv_path: Path to the CSV file
+        data: List of data items, each with 'id', 'text', and 'meta' keys
         
     Returns:
-        Number of movies loaded
+        Number of items loaded
     """
-    movies = load_movie_plots_csv(csv_path)
-    if collection.count() == len(movies):
-        print("Collection already contains all movie plots; skipping load.")
+    if collection.count() == len(data):
+        print("Collection already contains all data; skipping load.")
         return collection.count()
 
     batch_size = 5000  # Safe batch size under ChromaDB's limit
     total_loaded = 0
+    total_start_time = time.time()
     
     # Process in batches to respect ChromaDB's batch size limits
-    for i in range(0, len(movies), batch_size):
-        batch = movies[i:i + batch_size]
+    for i in range(0, len(data), batch_size):
+        batch = data[i:i + batch_size]
         
-        ids = [movie["id"] for movie in batch]
-        documents = [movie["text"] for movie in batch]
-        metadatas = [movie["meta"] for movie in batch]
+        ids = [item["id"] for item in batch]
+        documents = [item["text"] for item in batch]
+        metadatas = [item["meta"] for item in batch]
         
+        batch_start_time = time.time()
         collection.upsert(
             ids=ids,
             documents=documents,
             metadatas=metadatas
         )
+        batch_time = time.time() - batch_start_time
         
         total_loaded += len(batch)
-        print(f"Loaded batch {i//batch_size + 1}: {total_loaded}/{len(movies)} movies")
+        print(f"Loaded batch {i//batch_size + 1}: {total_loaded}/{len(data)} items (batch time: {batch_time:.2f}s)")
+    
+    total_time = time.time() - total_start_time
+    print(f"Total loading time: {total_time:.2f}s")
     
     return collection.count()
