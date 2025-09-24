@@ -26,8 +26,5 @@ install-deb:
 install-pip: $(VENV)
 	. $(VENV)/bin/activate; pip3 install --upgrade -r requirements.txt
 
-chroma-demo: $(VENV)
-	. $(VENV)/bin/activate; python3 vector_db/chroma_example/chroma_demo.py
-
-embedding-demo: $(VENV)
-	. $(VENV)/bin/activate; python3 vector_db/embedding_example/embedding.py
+chroma: $(VENV)
+	. $(VENV)/bin/activate; python3 src/chroma.py
