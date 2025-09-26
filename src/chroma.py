@@ -8,11 +8,13 @@ Run:
 
 from __future__ import annotations
 from pathlib import Path
+import time
 import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from chromadb.config import Settings
 import db
 from generate_queries import generate_queries_from_dataset
+from metrics import calculate_percentiles, print_metrics
 
 def main():
     dbDir = Path("./db/chroma")
@@ -32,26 +34,45 @@ def main():
         count = db.load_data_to_chroma(collection, movies)
         print(f"{count} items are contained in the ChromaDB collection 'movie_plots'")
     
-    queries = generate_queries_from_dataset(movies, model="gpt-oss", ollama_url="http://localhost:11434")
-    for query in queries:
+    queries = generate_queries_from_dataset(movies, model="gemma3", ollama_url="http://localhost:11434")
+    query_latencies = []
+    query_results = []
+    print(f"Processing {len(queries)} queries...")
+
+    for i, query in enumerate(queries):
+        start_time = time.time()
         res = collection.query(
             query_texts=[query],
             n_results=5,
         )
+        end_time = time.time()
+        latency_ms = (end_time - start_time) * 1000  # Convert to milliseconds
+        query_latencies.append(latency_ms)
         
         query_result = {
+            "query_id": i + 1,
             "query": query,
+            "latency_ms": latency_ms,
             "results": [
                 {
-                    "rank": i + 1,
+                    "rank": j + 1,
                     "distance": distance,
                     "document": doc
                 }
-                for i, (doc, distance) in enumerate(zip(res['documents'][0], res['distances'][0]))
+                for j, (doc, distance) in enumerate(zip(res['documents'][0], res['distances'][0]))
             ]
         }
         
-        print(query_result)
+        query_results.append(query_result)
+
+    # Calculate and display query performance metrics
+    if query_latencies:
+        print(f"\nProcessed {len(query_results)} queries successfully")
+        
+        metrics = calculate_percentiles(query_latencies)
+        print("\n" + "="*50)
+        print_metrics(metrics, unit="ms")
+        print("="*50)
 
 if __name__ == "__main__":
     main()

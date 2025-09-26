@@ -55,6 +55,7 @@ def generate_queries_from_dataset(
     Based on the following text, generate 1 search query that someone might use to find this document in a vector database. The query should be:
     - A natural language question or phrase
     - Related to the main concepts and topics in the text
+    - A summary of the key ideas
 
     Text: {text[:500]}...  # Truncated for brevity
 
