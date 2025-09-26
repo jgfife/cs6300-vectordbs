@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import random
 import requests
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -25,6 +26,26 @@ class SearchResult:
         self.relevancy_score = score
         self.relevancy_explanation = explanation
         self.is_relevant = 1 if score >= 4.0 else 0
+    
+    def __str__(self) -> str:
+        """Pretty print representation of search result."""
+        # Truncate document to first 80 characters for readability
+        doc_preview = self.document[:80] + "..." if len(self.document) > 80 else self.document
+        
+        # Format relevancy info if available
+        relevancy_info = ""
+        if self.relevancy_score is not None:
+            relevancy_info = f" | Score: {self.relevancy_score:.1f}/5.0"
+            relevant_text = "Yes" if self.is_relevant == 1 else "No"
+            relevancy_info += f" | Relevant: {relevant_text}"
+        
+        result = f"    [{self.rank}] Distance: {self.distance:.3f}{relevancy_info}\n"
+        result += f"        \"{doc_preview}\""
+        
+        if self.relevancy_explanation:
+            result += f"\n        Explanation: {self.relevancy_explanation}"
+        
+        return result
 
 
 @dataclass 
@@ -34,6 +55,8 @@ class QueryResult:
     query: str
     latency_ms: float
     results: List[SearchResult]
+    recall: Optional[float] = None
+    ndcg: Optional[float] = None
     
     @classmethod
     def from_chroma_response(
@@ -55,6 +78,30 @@ class QueryResult:
             )
         ]
         return cls(query_id, query, latency_ms, results)
+    
+    def __str__(self) -> str:
+        """Pretty print representation of query result."""
+        # Header with query info
+        result = f"Query #{self.query_id} (ID: {self.query_id}) [{self.latency_ms:.1f}ms]\n"
+        result += f"  Query: \"{self.query}\"\n"
+        
+        # Add metrics if available
+        metrics_info = []
+        if self.recall is not None:
+            metrics_info.append(f"Recall: {self.recall:.3f}")
+        if self.ndcg is not None:
+            metrics_info.append(f"nDCG: {self.ndcg:.3f}")
+        
+        if metrics_info:
+            result += f"  {', '.join(metrics_info)}\n"
+        
+        result += f"\n  Results:\n"
+        
+        # Add each search result
+        for search_result in self.results:
+            result += str(search_result) + "\n"
+        
+        return result
 
 
 class QueryResults:
@@ -82,7 +129,7 @@ class QueryResults:
         model: str = "gpt-oss", 
         ollama_url: str = "http://localhost:11434"
     ) -> None:
-        """Score the relevancy of query results using Ollama with gpt-oss."""
+        """Score the relevancy of query results using Ollama."""
         print(f"Scoring relevancy for {len(self.results)} queries using {model}...")
         
         for query_result in self.results:
@@ -97,7 +144,7 @@ class QueryResults:
 
 Query: "{query}"
 
-Document: "{document[:500]}..."
+Document: "{document}
 
 Provide your response in this exact format:
 Score: [1-5]
@@ -144,8 +191,6 @@ Where:
                     
                     # Add relevancy data in-place
                     result.add_relevancy(score, explanation)
-
-                    print(f"  Result Rank [{result.rank}], Score [{score}], IsRelevant [{result.is_relevant}], Explanation [{explanation}]")
                     
                 except Exception as e:
                     print(f"Error scoring relevancy for result {result.rank}: {e}")
@@ -153,6 +198,162 @@ Where:
                     result.add_relevancy(3.0, f"Error during scoring: {str(e)}")
         
         print(f"Completed relevancy scoring for {len(self.results)} queries")
+    
+    def calculate_recall_at_k(self) -> float:
+        """
+        Calculate recall@k for each query and return the averaged recall value.
+        Uses k = len(query_result.results) for each query (full result set).
+        
+        Recall@k = (# relevant items retrieved in top-k) / (total # relevant items for query)
+        
+        Returns:
+            Average recall value across all queries
+        """
+        if not self.results:
+            return 0.0
+            
+        recall_scores = []
+        
+        for query_result in self.results:
+            # Use full result set as k for this query
+            k = len(query_result.results)
+            
+            # Count total relevant items for this query
+            total_relevant = sum(1 for result in query_result.results if result.is_relevant == 1)
+            
+            if total_relevant == 0:
+                # Store 0.0 for queries with no relevant items
+                query_result.recall = 0.0
+                continue
+                
+            # Count relevant items in top-k results (all results since k = len(results))
+            relevant_in_topk = sum(
+                1 for result in query_result.results[:k] if result.is_relevant == 1
+            )
+            
+            recall = relevant_in_topk / total_relevant
+            query_result.recall = recall
+            recall_scores.append(recall)
+        
+        # Return average recall across all queries
+        return sum(recall_scores) / len(recall_scores) if recall_scores else 0.0
+    
+    def calculate_ndcg_at_k(self) -> float:
+        """
+        Calculate nDCG@k for each query and return the averaged nDCG value.
+        Uses k = len(query_result.results) for each query (full result set).
+        
+        nDCG@k = DCG@k / IDCG@k
+        DCG@k = sum(rel_i / log2(i + 1)) for i=1 to k
+        IDCG@k = DCG@k for ideally ranked results
+        
+        Returns:
+            Average nDCG value across all queries
+        """
+        if not self.results:
+            return 0.0
+            
+        ndcg_scores = []
+        
+        for query_result in self.results:
+            # Use full result set as k for this query
+            k = len(query_result.results)
+            
+            # Get relevance scores for all results
+            relevance_scores = []
+            for result in query_result.results:
+                if result.relevancy_score is not None:
+                    relevance_scores.append(result.relevancy_score)
+                else:
+                    relevance_scores.append(0.0)
+            
+            if not relevance_scores:
+                query_result.ndcg = 0.0
+                continue
+                
+            # Calculate DCG@k
+            dcg = 0.0
+            for i, rel_score in enumerate(relevance_scores):
+                if rel_score > 0:
+                    dcg += rel_score / (math.log2(i + 2))  # i+2 because positions start at 1
+            
+            # Calculate IDCG@k (ideal DCG with perfect ranking)
+            ideal_scores = sorted(relevance_scores, reverse=True)
+            idcg = 0.0
+            for i, rel_score in enumerate(ideal_scores):
+                if rel_score > 0:
+                    idcg += rel_score / (math.log2(i + 2))
+            
+            # Calculate nDCG@k
+            if idcg > 0:
+                ndcg = dcg / idcg
+            else:
+                ndcg = 0.0
+                
+            query_result.ndcg = ndcg
+            ndcg_scores.append(ndcg)
+        
+        # Return average nDCG across all queries
+        return sum(ndcg_scores) / len(ndcg_scores) if ndcg_scores else 0.0
+    
+    def __str__(self) -> str:
+        """Pretty print summary of all query results."""
+        if not self.results:
+            return "No query results available"
+        
+        # Header
+        result = f"Query Results Summary ({len(self.results)} queries)\n"
+        result += "=" * 50 + "\n"
+        
+        # Performance metrics
+        latencies = self.get_latencies()
+        if latencies:
+            avg_latency = sum(latencies) / len(latencies)
+            min_latency = min(latencies)
+            max_latency = max(latencies)
+            result += f"Performance: Avg {avg_latency:.1f}ms, Min {min_latency:.1f}ms, Max {max_latency:.1f}ms\n"
+        
+        # IR metrics summary
+        recalls = [qr.recall for qr in self.results if qr.recall is not None]
+        ndcgs = [qr.ndcg for qr in self.results if qr.ndcg is not None]
+        
+        if recalls:
+            avg_recall = sum(recalls) / len(recalls)
+            result += f"Average Recall: {avg_recall:.3f}\n"
+        
+        if ndcgs:
+            avg_ndcg = sum(ndcgs) / len(ndcgs)
+            result += f"Average nDCG: {avg_ndcg:.3f}\n"
+        
+        result += "=" * 50
+        return result
+    
+    def detailed_report(self) -> str:
+        """Generate detailed report with all individual query results."""
+        if not self.results:
+            return "No query results available"
+        
+        result = str(self) + "\n\n"
+        result += "Detailed Query Results:\n"
+        result += "=" * 50 + "\n\n"
+        
+        for query_result in self.results:
+            result += str(query_result) + "\n"
+        
+        return result
+
+
+def print_ir_metrics(avg_recall: float, avg_ndcg: float) -> None:
+    """
+    Print formatted IR metrics output.
+    
+    Args:
+        avg_recall: Average recall value across all queries
+        avg_ndcg: Average nDCG value across all queries
+    """
+    print("Information Retrieval Metrics:")
+    print(f"  Average Recall: {avg_recall:.3f}")
+    print(f"  Average nDCG: {avg_ndcg:.3f}")
 
 
 def generate_queries_from_dataset(
