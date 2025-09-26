@@ -21,6 +21,7 @@
 - Include shebang `#!/usr/bin/env python3` for executable scripts
 - Type hints: Use `str | Path` for path parameters, `List[Dict[str, Any]]` for data structures
 - Handle encoding explicitly: use `encoding='utf-8'` for file operations
+- Error handling: Use explicit exception handling where needed, especially for file I/O and external API calls
 
 ## Dependencies
 - Core: chromadb>=0.5.0, numpy>=1.26, requests>=2.31.0

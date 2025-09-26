@@ -1,6 +1,7 @@
 .venv
 __pycache__
 .DS_Store
+syntax_demo.py
 
 dataset/*
 db/chroma/*

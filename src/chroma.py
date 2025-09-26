@@ -13,7 +13,7 @@ import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from chromadb.config import Settings
 import db
-from generate_queries import generate_queries_from_dataset
+from queries import generate_queries_from_dataset, QueryResults, QueryResult
 from metrics import calculate_percentiles, print_metrics
 
 def main():
@@ -35,8 +35,7 @@ def main():
         print(f"{count} items are contained in the ChromaDB collection 'movie_plots'")
     
     queries = generate_queries_from_dataset(movies, model="gemma3", ollama_url="http://localhost:11434")
-    query_latencies = []
-    query_results = []
+    query_results = QueryResults()
     print(f"Processing {len(queries)} queries...")
 
     for i, query in enumerate(queries):
@@ -47,25 +46,13 @@ def main():
         )
         end_time = time.time()
         latency_ms = (end_time - start_time) * 1000  # Convert to milliseconds
-        query_latencies.append(latency_ms)
         
-        query_result = {
-            "query_id": i + 1,
-            "query": query,
-            "latency_ms": latency_ms,
-            "results": [
-                {
-                    "rank": j + 1,
-                    "distance": distance,
-                    "document": doc
-                }
-                for j, (doc, distance) in enumerate(zip(res['documents'][0], res['distances'][0]))
-            ]
-        }
-        
-        query_results.append(query_result)
+        # Create QueryResult object using factory method
+        query_result = QueryResult.from_chroma_response(i + 1, query, latency_ms, res)
+        query_results.add_result(query_result)
 
     # Calculate and display query performance metrics
+    query_latencies = query_results.get_latencies()
     if query_latencies:
         print(f"\nProcessed {len(query_results)} queries successfully")
         
@@ -73,6 +60,11 @@ def main():
         print("\n" + "="*50)
         print_metrics(metrics, unit="ms")
         print("="*50)
+
+    # Score relevancy of all query results using LLM
+    if len(query_results) > 0:
+        print(f"\nScoring relevancy for {len(query_results)} queries...")
+        query_results.score_relevancy(model="llama3.1", ollama_url="http://localhost:11434")
 
 if __name__ == "__main__":
     main()
