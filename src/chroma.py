@@ -12,6 +12,7 @@ import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from chromadb.config import Settings
 import db
+from generate_queries import generate_queries_from_dataset
 
 def main():
     dbDir = Path("./db/chroma")
@@ -26,14 +27,31 @@ def main():
     )
 
     movies = db.load_movie_plots_csv("dataset/wiki_movie_plots_deduped.csv")
-    if collection.count() == len(movies):
-        print("Collection already contains all movie plots; skipping load.")
-        return collection.count()
-
-    count = db.load_data_to_chroma(collection, movies)
-    print(f"{count} items are contained in the ChromaDB collection 'movie_plots'")
-
-    # TODO: Generate queries and time them
+    if collection.count() != len(movies):
+        print(f"Loading {len(movies)} items into ChromaDB collection 'movie_plots'...")
+        count = db.load_data_to_chroma(collection, movies)
+        print(f"{count} items are contained in the ChromaDB collection 'movie_plots'")
+    
+    queries = generate_queries_from_dataset(movies, model="gpt-oss", ollama_url="http://localhost:11434")
+    for query in queries:
+        res = collection.query(
+            query_texts=[query],
+            n_results=5,
+        )
+        
+        query_result = {
+            "query": query,
+            "results": [
+                {
+                    "rank": i + 1,
+                    "distance": distance,
+                    "document": doc
+                }
+                for i, (doc, distance) in enumerate(zip(res['documents'][0], res['distances'][0]))
+            ]
+        }
+        
+        print(query_result)
 
 if __name__ == "__main__":
     main()

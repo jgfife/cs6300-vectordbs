@@ -64,10 +64,7 @@ def load_data_to_chroma(
     Returns:
         Number of items loaded
     """
-    if collection.count() == len(data):
-        print("Collection already contains all data; skipping load.")
-        return collection.count()
-
+    
     batch_size = 5000  # Safe batch size under ChromaDB's limit
     total_loaded = 0
     total_start_time = time.time()
