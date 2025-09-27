@@ -9,6 +9,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 @dataclass
@@ -127,24 +128,22 @@ class QueryResults:
     def score_relevancy(
         self, 
         model: str = "gpt-oss", 
-        ollama_url: str = "http://localhost:11434"
+        ollama_url: str = "http://localhost:11434",
+        max_workers: int = 10
     ) -> None:
-        """Score the relevancy of query results using Ollama."""
-        print(f"Scoring relevancy for {len(self.results)} queries using {model}...")
+        """Score the relevancy of query results using Ollama with parallel processing."""
+        print(f"Scoring relevancy for {len(self.results)} queries using {model} with {max_workers} parallel workers...")
         
-        for query_result in self.results:
-            query = query_result.query
+        def score_single_result(args):
+            """Score a single result - designed for parallel execution."""
+            query, result, query_id, result_idx = args
+            document = result.document
             
-            print(f"Scoring query {query_result.query_id}/{len(self.results)}: '{query}'")
-            
-            for result in query_result.results:
-                document = result.document
-                
-                prompt = f"""Rate the relevancy of this document to the given query on a scale of 1-5:
+            prompt = f"""Rate the relevancy of this document to the given query on a scale of 1-5:
 
 Query: "{query}"
 
-Document: "{document}
+Document: "{document}"
 
 Provide your response in this exact format:
 Score: [1-5]
@@ -156,48 +155,78 @@ Where:
 3 = Moderately relevant and has parallels in topic or subject matter
 4 = Highly relevant and has parallels in time period, location, theme, or genre
 5 = Extremely relevant and directly addresses the query"""
+            
+            try:
+                response = requests.post(
+                    f"{ollama_url}/api/generate",
+                    json={
+                        "model": model,
+                        "prompt": prompt,
+                        "stream": False
+                    },
+                    timeout=120
+                )
+                response.raise_for_status()
                 
-                try:
-                    response = requests.post(
-                        f"{ollama_url}/api/generate",
-                        json={
-                            "model": model,
-                            "prompt": prompt,
-                            "stream": False
-                        },
-                        timeout=30
-                    )
-                    response.raise_for_status()
-                    
-                    result_json = response.json()
-                    generated_text = result_json.get("response", "")
-                    
-                    # Parse score and explanation from response
-                    score = 3.0  # Default fallback score
-                    explanation = "Unable to parse response"
-                    
-                    for line in generated_text.strip().split('\n'):
-                        line = line.strip()
-                        if line.startswith("Score:"):
-                            try:
-                                score_str = line.replace("Score:", "").strip()
-                                score = float(score_str)
-                                # Clamp score to 1-5 range
-                                score = max(1.0, min(5.0, score))
-                            except ValueError:
-                                pass
-                        elif line.startswith("Explanation:"):
-                            explanation = line.replace("Explanation:", "").strip()
-                    
-                    # Add relevancy data in-place
-                    result.add_relevancy(score, explanation)
-                    
-                except Exception as e:
-                    print(f"Error scoring relevancy for result {result.rank}: {e}")
-                    # Add default scoring on error
-                    result.add_relevancy(3.0, f"Error during scoring: {str(e)}")
+                result_json = response.json()
+                generated_text = result_json.get("response", "")
+                
+                # Parse score and explanation from response
+                score = 3.0  # Default fallback score
+                explanation = "Unable to parse response"
+                
+                for line in generated_text.strip().split('\n'):
+                    line = line.strip()
+                    if line.startswith("Score:"):
+                        try:
+                            score_str = line.replace("Score:", "").strip()
+                            score = float(score_str)
+                            # Clamp score to 1-5 range
+                            score = max(1.0, min(5.0, score))
+                        except ValueError:
+                            pass
+                    elif line.startswith("Explanation:"):
+                        explanation = line.replace("Explanation:", "").strip()
+                
+                return (query_id, result_idx, score, explanation, None)
+                
+            except Exception as e:
+                error_msg = f"Error during scoring: {str(e)}"
+                return (query_id, result_idx, 3.0, error_msg, e)
         
-        print(f"Completed relevancy scoring for {len(self.results)} queries")
+        # Prepare all scoring tasks
+        scoring_tasks = []
+        for query_result in self.results:
+            query = query_result.query
+            for result_idx, result in enumerate(query_result.results):
+                scoring_tasks.append((query, result, query_result.query_id, result_idx))
+        
+        print(f"Processing {len(scoring_tasks)} documents across {len(self.results)} queries...")
+        
+        # Execute scoring tasks in parallel
+        completed_count = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_task = {executor.submit(score_single_result, task): task for task in scoring_tasks}
+            
+            # Process results as they complete
+            for future in as_completed(future_to_task):
+                query_id, result_idx, score, explanation, error = future.result()
+                
+                # Find the correct query result and add relevancy data
+                for query_result in self.results:
+                    if query_result.query_id == query_id:
+                        query_result.results[result_idx].add_relevancy(score, explanation)
+                        break
+                
+                completed_count += 1
+                if completed_count % 10 == 0 or completed_count == len(scoring_tasks):
+                    print(f"Completed scoring {completed_count}/{len(scoring_tasks)} documents...")
+                
+                if error:
+                    print(f"Error scoring query {query_id}, result {result_idx}: {error}")
+        
+        print(f"Completed relevancy scoring for {len(self.results)} queries using parallel processing")
     
     def calculate_recall_at_k(self) -> float:
         """
@@ -372,8 +401,8 @@ def generate_queries_from_dataset(
     Returns:
         List of generated queries suitable for vector database search
     """
-    # 10% of the dataset
-    sample_size = max(1, len(dataset) // 10)
+    
+    sample_size = 500
 
     # Try to load existing queries from file
     queries = []
