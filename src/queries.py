@@ -80,6 +80,25 @@ class QueryResult:
         ]
         return cls(query_id, query, latency_ms, results)
     
+    @classmethod
+    def from_pinecone_response(
+        cls,
+        query_id: int,
+        query: str,
+        latency_ms: float,
+        pinecone_response: Dict[str, Any]
+    ) -> 'QueryResult':
+        """Factory method to create QueryResult from Pinecone response."""
+        results = [
+            SearchResult(
+                rank=j + 1,
+                distance=match['score'],
+                document=match['metadata']['text']
+            )
+            for j, match in enumerate(pinecone_response['matches'])
+        ]
+        return cls(query_id, query, latency_ms, results)
+    
     def __str__(self) -> str:
         """Pretty print representation of query result."""
         # Header with query info

@@ -30,5 +30,8 @@ install-pip: $(VENV)
 chroma: $(VENV)
 	. $(VENV)/bin/activate; python3 src/chroma.py
 
+pinecone: $(VENV)
+	. $(VENV)/bin/activate; python3 src/pineconeDB.py
+
 clean:
 	rm -rf db/chroma/*
