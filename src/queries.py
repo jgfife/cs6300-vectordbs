@@ -267,19 +267,14 @@ Where:
             k = len(query_result.results)
             
             # Count total relevant items for this query
-            total_relevant = sum(1 for result in query_result.results if result.is_relevant == 1)
+            relevant_in_topk = sum(1 for result in query_result.results if result.is_relevant == 1)
             
-            if total_relevant == 0:
+            if relevant_in_topk == 0:
                 # Store 0.0 for queries with no relevant items
                 query_result.recall = 0.0
                 continue
-                
-            # Count relevant items in top-k results (all results since k = len(results))
-            relevant_in_topk = sum(
-                1 for result in query_result.results[:k] if result.is_relevant == 1
-            )
             
-            recall = relevant_in_topk / total_relevant
+            recall = relevant_in_topk / k
             query_result.recall = recall
             recall_scores.append(recall)
         
@@ -310,8 +305,8 @@ Where:
             # Get relevance scores for all results
             relevance_scores = []
             for result in query_result.results:
-                if result.relevancy_score is not None:
-                    relevance_scores.append(result.relevancy_score)
+                if result.is_relevant is not None:
+                    relevance_scores.append(result.is_relevant)
                 else:
                     relevance_scores.append(0.0)
             
